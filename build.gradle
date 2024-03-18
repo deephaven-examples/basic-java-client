@@ -1,0 +1,31 @@
+plugins {
+    id 'java'
+}
+
+
+group = 'io.deephaven'
+version = '1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation "io.deephaven:deephaven-java-client-barrage"
+    implementation "io.deephaven:deephaven-java-client-barrage-dagger"
+    implementation platform("io.deephaven:deephaven-bom:$dhcVersion")
+
+    runtimeOnly "io.deephaven:deephaven-log-to-slf4j"
+    runtimeOnly 'ch.qos.logback:logback-classic:1.4.12'
+
+    if (!project.hasProperty('excludeHotspotImpl')) {
+        runtimeOnly "io.deephaven:deephaven-hotspot-impl:$dhcVersion"
+    }
+
+    testImplementation platform('org.junit:junit-bom:5.9.1')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+}
+
+test {
+    useJUnitPlatform()
+}
