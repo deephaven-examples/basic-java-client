@@ -12,7 +12,6 @@ repositories {
 
 dependencies {
     implementation "io.deephaven:deephaven-java-client-barrage"
-    implementation "io.deephaven:deephaven-java-client-barrage-dagger"
     implementation platform("io.deephaven:deephaven-bom:$dhcVersion")
 
     runtimeOnly "io.deephaven:deephaven-log-to-slf4j"
