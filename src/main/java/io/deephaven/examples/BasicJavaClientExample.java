@@ -1,6 +1,7 @@
 package io.deephaven.examples;
 
 import io.deephaven.client.impl.*;
+import io.deephaven.client.impl.BarrageSessionFactoryConfig.Factory;
 import io.deephaven.engine.table.Table;
 import io.deephaven.engine.util.TableTools;
 import io.deephaven.extensions.barrage.util.BarrageUtil;
@@ -10,11 +11,11 @@ import io.deephaven.qst.table.InMemoryAppendOnlyInputTable;
 import io.deephaven.qst.table.NewTable;
 import io.deephaven.qst.table.TableHeader;
 import io.deephaven.qst.table.TableSpec;
-import io.grpc.ManagedChannel;
-import io.grpc.ManagedChannelBuilder;
+import io.deephaven.uri.DeephavenTarget;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 
+import java.net.URI;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -47,28 +48,32 @@ public class BasicJavaClientExample {
         // Create a BufferAllocator. (This is used by the underlying Flight implementation.)
         final BufferAllocator bufferAllocator = new RootAllocator();
 
-        // Create the ManagedChannel. This defines the underlying connection to the Deephaven server.
-        final ManagedChannel managedChannel = ManagedChannelBuilder.forTarget("localhost:10000")
-                .usePlaintext() // Use '.useTransportSecurity()' if TLS is enabled on the server
-                .build();
-
         // Create a scheduler thread pool. This is used by the Flight session.
         final ScheduledExecutorService threadPool = Executors.newScheduledThreadPool(4);
 
+        // ClientConfig describes the configuration to connect to the host
+        final ClientConfig config = ClientConfig.builder()
+                .target(DeephavenTarget.of(URI.create("dh+plain://localhost:10000")))
+                .build();
+
+        // SessionConfig describes the configuration needed to create a session
+        final SessionConfig sessionConfig = SessionConfig.builder()
+                .authenticationTypeAndValue("io.deephaven.authentication.psk.PskAuthenticationHandler " + pskString)
+                .build();
+
         // Create a FlightSessionFactory. This stitches together the above components to create the real, live
         // API session with the server.
-        final BarrageSessionFactory barrageSessionFactory =
-                DaggerDeephavenBarrageRoot.create().factoryBuilder()
-                        .managedChannel(managedChannel)
-                        .scheduler(threadPool)
-                        .allocator(bufferAllocator)
-                        .authenticationTypeAndValue("io.deephaven.authentication.psk.PskAuthenticationHandler " + pskString)
-                        .build();
+        final Factory factory = BarrageSessionFactoryConfig.builder()
+                .clientConfig(config)
+                .allocator(bufferAllocator)
+                .scheduler(threadPool)
+                .build()
+                .factory();
 
         // Create the Flight session and retrieve the underlying client API session.
-        try (final BarrageSession barrageSession = barrageSessionFactory.newBarrageSession();
-             final Session clientSession = barrageSession.session()
-        ) {
+        try (
+                final BarrageSession barrageSession = factory.newBarrageSession(sessionConfig);
+                final Session clientSession = barrageSession.session()) {
 
             // Define an append-only "InputTable" on the server. The client can send data to the server to append to this.
             final TableSpec inputTableSpec = InMemoryAppendOnlyInputTable.of(TableHeader.of(
