@@ -131,12 +131,15 @@ public class BasicJavaClientExample {
                 throw new RuntimeException(changes.errorMessage().get());
             }
 
-            // Get a TableHandle for my myNewTable. We will use this to pull the table over to the client.
-            final TableHandle myNewTableHandle = clientSession.of(TicketTable.fromQueryScopeField("my_new_table"));
+            // Get a TableHandle for my my_new_table, accessing it by its name in the scope. We will use this to pull
+            // the table over to the client.
+            // (We could also use the TicketTable to execute additional queries against my_new_table.)
+            final TicketTable myNewTable_ticket = TicketTable.fromQueryScopeField("my_new_table");
+            final TableHandle myNewTableHandle_handle = clientSession.of(myNewTable_ticket);
 
             // Pull myNewTable over from the server and print out its contents.
             System.out.println("Printing 'myNewTable' locally:");
-            pullDataToClient(barrageSession, myNewTableHandle);
+            pullDataToClient(barrageSession, myNewTableHandle_handle);
 
             // Do the same for myAggregatedTable
             System.out.println("Printing 'myAggregatedTable' locally:");
