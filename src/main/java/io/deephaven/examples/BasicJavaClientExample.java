@@ -79,7 +79,22 @@ public class BasicJavaClientExample {
                 final BarrageSession barrageSession = factory.newBarrageSession(sessionConfig);
                 final Session clientSession = barrageSession.session()) {
 
-            // Define an append-only "InputTable" on the server. The client can send data to the server to append to this.
+            // Define a new table to publish to the server. This table has three columns: an integer column and two
+            // string columns.
+            final NewTable myTable = NewTable.of(
+                    Column.ofInt("MyIntCol", 1, 1, 2, 3, 5, 8, 13, 21, 34),
+                    Column.of("MyStrCol", String.class, "This", "is", "an", "example", "table", "created", "on", "the", "client"),
+                    Column.of("MyStrCol2", String.class, "Row1", "Row2", "Row3", "Row4", "Row5", "Row6", "Row7", "Row8", "Row9")
+            );
+
+            // Push the table to the server. This returns a TableHandle, which is a reference to the table on the server
+            // that can be used to run queries against the table from the client.
+            final TableHandle myTableHandle = barrageSession.putExport(myTable, bufferAllocator);
+
+            // Publish the table on the server. This makes the table accessible via the Deephaven UI.
+            clientSession.publish("my_table", myTableHandle).get();
+
+            // For a modifiable table, define an append-only "InputTable" on the server. The client can send data to the server to append to this.
             final TableSpec inputTableSpec = InMemoryAppendOnlyInputTable.of(TableHeader.of(
                     ColumnHeader.ofInt("MyIntCol"),
                     ColumnHeader.of("MyStrCol", String.class),
@@ -90,7 +105,7 @@ public class BasicJavaClientExample {
             final TableHandle inputTableHandle = clientSession.execute(inputTableSpec);
 
             // Publish the input table on the server -- this makes the table accessible via the UI.
-            clientSession.publish("my_table", inputTableHandle);
+            clientSession.publish("my_input_table", inputTableHandle);
 
             // Define (client-side) a table of new rows to add to the InputTable on the server
             final NewTable dataToAdd = NewTable.of(
@@ -125,21 +140,21 @@ public class BasicJavaClientExample {
                     "def my_function(my_int) -> int:\n" +
                     "    return my_int * 2\n" +
                     "\n" +
-                    "my_new_table = my_table.update('MyIntColDoubled = my_function(MyIntCol)')"
+                    "my_updated_input_table = my_input_table.update('MyIntColDoubled = my_function(MyIntCol)')"
             );
             if (changes.errorMessage().isPresent()) {
                 throw new RuntimeException(changes.errorMessage().get());
             }
 
-            // Get a TableHandle for my my_new_table, accessing it by its name in the scope. We will use this to pull
-            // the table over to the client.
-            // (We could also use the TicketTable to execute additional queries against my_new_table.)
-            final TicketTable myNewTable_ticket = TicketTable.fromQueryScopeField("my_new_table");
-            final TableHandle myNewTableHandle_handle = clientSession.of(myNewTable_ticket);
+            // Get a TableHandle for my my_updated_input_table, accessing it by its name in the scope. We will use this
+            // to pull the table over to the client.
+            // (We could also use the TicketTable to execute additional queries against my_updated_input_table.)
+            final TicketTable myUpdatedInputTable_ticket = TicketTable.fromQueryScopeField("my_updated_input_table");
+            final TableHandle myUpdatedTableHandle_handle = clientSession.of(myUpdatedInputTable_ticket);
 
-            // Pull myNewTable over from the server and print out its contents.
-            System.out.println("Printing 'myNewTable' locally:");
-            pullDataToClient(barrageSession, myNewTableHandle_handle);
+            // Pull myTable over from the server and print out its contents.
+            System.out.println("Printing 'my_updated_input_table' locally:");
+            pullDataToClient(barrageSession, myUpdatedTableHandle_handle);
 
             // Do the same for myAggregatedTable
             System.out.println("Printing 'myAggregatedTable' locally:");
@@ -162,30 +177,30 @@ public class BasicJavaClientExample {
      * </ol>
      *
      * @param barrageSession   The Barrage session to use.
-     * @param myNewTableHandle The TableHandle for the table whose data will be pulled from the server.
+     * @param tableHandle The TableHandle for the table whose data will be pulled from the server.
      * @throws InterruptedException If interrupted while pulling the Barrage snapshot
      */
-    private static void pullDataToClient(BarrageSession barrageSession, TableHandle myNewTableHandle) throws InterruptedException, ExecutionException {
-        // Take a snapshot of the server-side version of the new table we created, and pull it back to the client.
-        // For our example this is fine, but for tables with millions of rows, this may take some time and use a
-        // lot of memory!
-        final BarrageSnapshot snapshot = barrageSession.snapshot(myNewTableHandle, BarrageUtil.DEFAULT_SNAPSHOT_DESER_OPTIONS);
-        final Table tableFromServer = snapshot.entireTable().get();
+    private static void pullDataToClient(BarrageSession barrageSession, TableHandle tableHandle) throws InterruptedException, ExecutionException {
+        // Take a snapshot of a table on the server and pull it back to the client.
+        // For the example in this file this will work great is fine -- but for tables with millions of rows, this may
+        // take some time and use a lot of memory!
+        final BarrageSnapshot snapshot = barrageSession.snapshot(tableHandle, BarrageUtil.DEFAULT_SNAPSHOT_DESER_OPTIONS);
+        final Table localTableRetrievedFromServer = snapshot.entireTable().get();
 
-        // Print the table to STDOUT:
+        // Print the table to STDOUT with TableTools.show():
         System.out.println("Printing table with TableTools.show():");
-        TableTools.show(tableFromServer);
+        TableTools.show(localTableRetrievedFromServer);
         System.out.println();
 
         // We can also extract data from the table row-by-row, for example to use in other Java code.
         // See https://deephaven.io/core/groovy/docs/how-to-guides/extract-table-value/ for additional examples.
-        final String[] columnNames = tableFromServer.getDefinition().getColumnNamesArray();
-        final Map<String, ? extends ColumnSource<?>> columnSources = tableFromServer.getColumnSourceMap();
+        final String[] columnNames = localTableRetrievedFromServer.getDefinition().getColumnNamesArray();
+        final Map<String, ? extends ColumnSource<?>> columnSources = localTableRetrievedFromServer.getColumnSourceMap();
 
 
         System.out.println("Printing table using RowSet and ColumnSources:");
         int rowIdx = 0;
-        for (RowSet.Iterator iterator = tableFromServer.getRowSet().iterator(); iterator.hasNext(); ) {
+        for (RowSet.Iterator iterator = localTableRetrievedFromServer.getRowSet().iterator(); iterator.hasNext(); ) {
             // Iterate over the RowSet to get the "row keys". Row keys are used to access data in a ColumnSource.
             final long nextRowKey = iterator.nextLong();
             System.out.println("Data for row " + (rowIdx++) + ":");
