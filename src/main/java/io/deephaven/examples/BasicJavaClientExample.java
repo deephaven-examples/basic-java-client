@@ -8,7 +8,6 @@ import io.deephaven.engine.rowset.RowSet;
 import io.deephaven.engine.table.ColumnSource;
 import io.deephaven.engine.table.Table;
 import io.deephaven.engine.util.TableTools;
-import io.deephaven.extensions.barrage.util.BarrageUtil;
 import io.deephaven.qst.column.Column;
 import io.deephaven.qst.column.header.ColumnHeader;
 import io.deephaven.qst.table.*;
@@ -184,7 +183,7 @@ public class BasicJavaClientExample {
         // Take a snapshot of a table on the server and pull it back to the client.
         // For the example in this file this will work great is fine -- but for tables with millions of rows, this may
         // take some time and use a lot of memory!
-        final BarrageSnapshot snapshot = barrageSession.snapshot(tableHandle, BarrageUtil.DEFAULT_SNAPSHOT_DESER_OPTIONS);
+        final BarrageSnapshot snapshot = barrageSession.snapshot(tableHandle);
         final Table localTableRetrievedFromServer = snapshot.entireTable().get();
 
         // Print the table to STDOUT with TableTools.show():
