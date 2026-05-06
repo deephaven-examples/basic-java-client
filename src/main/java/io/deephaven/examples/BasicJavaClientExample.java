@@ -4,18 +4,27 @@ import io.deephaven.api.agg.Aggregation;
 import io.deephaven.client.impl.*;
 import io.deephaven.client.impl.BarrageSessionFactoryConfig.Factory;
 import io.deephaven.client.impl.script.Changes;
+import io.deephaven.engine.context.ExecutionContext;
+import io.deephaven.engine.context.QueryCompilerImpl;
 import io.deephaven.engine.rowset.RowSet;
 import io.deephaven.engine.table.ColumnSource;
 import io.deephaven.engine.table.Table;
+import io.deephaven.engine.table.TableUpdate;
+import io.deephaven.engine.table.impl.InstrumentedTableUpdateListenerAdapter;
+import io.deephaven.engine.updategraph.OperationInitializer;
+import io.deephaven.engine.updategraph.impl.PeriodicUpdateGraph;
 import io.deephaven.engine.util.TableTools;
 import io.deephaven.qst.column.Column;
 import io.deephaven.qst.column.header.ColumnHeader;
 import io.deephaven.qst.table.*;
 import io.deephaven.uri.DeephavenTarget;
+import io.deephaven.util.SafeCloseable;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.memory.RootAllocator;
 
 import java.net.URI;
+import java.nio.file.Files;
+import java.time.Duration;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutionException;
@@ -55,7 +64,7 @@ public class BasicJavaClientExample {
 
         // SessionConfig describes the configuration needed to create a session
         final SessionConfig sessionConfig = SessionConfig.builder()
-                .authenticationTypeAndValue("io.deephaven.authentication.psk.PskAuthenticationHandler " + pskString)
+//                .authenticationTypeAndValue("io.deephaven.authentication.psk.PskAuthenticationHandler " + pskString)
                 .build();
 
         // Create a BufferAllocator. (This is used by the underlying Flight implementation.)
@@ -158,6 +167,18 @@ public class BasicJavaClientExample {
             // Do the same for myAggregatedTable
             System.out.println("Printing 'myAggregatedTable' locally:");
             pullDataToClient(barrageSession, myAggregatedTable);
+
+            // Create a timetable on the server, add a cycling key column (0–4), and apply lastBy so
+            // the result has exactly 5 rows. The first 5 ticks produce adds; every subsequent tick
+            // modifies the matching row -- giving us a mix of adds and modifies to observe.
+            final TableHandle timeTableHandle = clientSession.execute(TimeTable.of(Duration.ofSeconds(1)));
+            final TableHandle listenable = timeTableHandle
+                    .update("Key = (int)(i % 5)", "TotalRowsCount = i")
+                    .lastBy("Key");
+            clientSession.publish("my_time_table", listenable);
+
+            System.out.println("\nSubscribing to lastBy timetable (ticks every 1 second).");
+            subscribeToTable(barrageSession, listenable);
         } finally {
             // Shut down the thread pool, allowing the client application to exit. (Otherwise the threads will keep the client app alive.)
             threadPool.shutdown();
@@ -209,4 +230,108 @@ public class BasicJavaClientExample {
             System.out.println();
         }
     }
+
+    /**
+     * Demonstrates a live Barrage subscription to a server-side table, with a listener that prints incremental updates.
+     * <p>
+     * Unlike {@link #pullDataToClient}, which takes a one-time snapshot, this method sets up a persistent subscription:
+     * the local {@link Table} returned by {@link BarrageSubscription#entireTable()} is kept in sync with the server
+     * and an {@link InstrumentedTableUpdateListenerAdapter} is attached to print every add, modify, and remove as it
+     * arrives.
+     * <p>
+     * Because the Java client has no default {@link ExecutionContext}, one must be built from scratch. We reuse the
+     * live table's own update graph (managed by the Barrage client) rather than creating a new one.
+     *
+     * @param barrageSession The Barrage session to use.
+     * @param tableHandle    The TableHandle for the table to subscribe to.
+     * @throws InterruptedException If interrupted while waiting for the initial snapshot.
+     * @throws ExecutionException   If the subscription future completes exceptionally.
+     */
+    private static void subscribeToTable(BarrageSession barrageSession, TableHandle tableHandle)
+            throws Exception {
+
+        // Subscribe to the table. Unlike snapshot(), this creates a live local Table that receives
+        // incremental updates from the server as they occur.
+        final BarrageSubscription subscription = barrageSession.subscribe(tableHandle);
+
+        // In a Java client there is no default ExecutionContext, so we must build one from scratch.
+        // We need an update graph to build the context, so we borrow the one from the BarrageSession
+        // by peeking at it before the subscription table is materialized.
+        // We use a PeriodicUpdateGraph with a unique name; the Barrage client will attach the
+        // subscription table to this same graph when entireTable() is called inside the open context.
+        final ExecutionContext executionContext = ExecutionContext.newBuilder()
+                .newQueryLibrary()
+                .newQueryScope()
+                .setOperationInitializer(OperationInitializer.NON_PARALLELIZABLE)
+                .setUpdateGraph(PeriodicUpdateGraph.newBuilder("BarrageClientGraph").existingOrBuild())
+                .setQueryCompiler(QueryCompilerImpl.create(
+                        Files.createTempDirectory("qc_").toFile(),
+                        ClassLoader.getSystemClassLoader()))
+                .build();
+
+        // The ExecutionContext must be open for the entirety of the subscription lifecycle.
+        try (final SafeCloseable ignored = executionContext.open()) {
+
+            // Block until the initial table image has been fully received from the server.
+            // After this point 'liveTable' is a ticking local copy that updates automatically.
+            final Table liveTable = subscription.entireTable().get();
+
+            final String[] columnNames = liveTable.getDefinition().getColumnNamesArray();
+            final Map<String, ? extends ColumnSource<?>> columnSources = liveTable.getColumnSourceMap();
+
+            final InstrumentedTableUpdateListenerAdapter listener =
+                    new InstrumentedTableUpdateListenerAdapter("subscribeToTable listener", liveTable, false) {
+                        @Override
+                        public void onUpdate(final TableUpdate upstream) {
+                            if (upstream.added().isNonempty()) {
+                                System.out.println("=== Added " + upstream.added().size() + " row(s) ===");
+                                printRows(upstream.added(), columnNames, columnSources);
+                            }
+                            if (upstream.modified().isNonempty()) {
+                                System.out.println("=== Modified " + upstream.modified().size() + " row(s) ===");
+                                printRows(upstream.modified(), columnNames, columnSources);
+                            }
+                            if (upstream.removed().isNonempty()) {
+                                // Row keys for removed rows refer to the *pre-update* row set,
+                                // so the data is no longer in the column sources at this point.
+                                System.out.println("=== Removed " + upstream.removed().size() + " row(s) ===");
+                            }
+
+                            System.out.println("Entire table:");
+                            TableTools.show(liveTable);
+                        }
+                    };
+
+            liveTable.addUpdateListener(listener);
+            System.out.println("Listening for updates. Press Enter to stop...");
+
+            // Block until the user presses Enter, then cleanly remove the listener.
+            //noinspection ResultOfMethodCallIgnored
+            System.in.read();
+
+            liveTable.removeUpdateListener(listener);
+            System.out.println("Unsubscribed.");
+        }
+    }
+
+    /**
+     * Iterates over a {@link RowSet} and prints each row's column values using the provided column sources.
+     *
+     * @param rowSet        The set of row keys to print.
+     * @param columnNames   The column names, in order.
+     * @param columnSources A map from column name to its {@link ColumnSource}.
+     */
+    private static void printRows(
+            final RowSet rowSet,
+            final String[] columnNames,
+            final Map<String, ? extends ColumnSource<?>> columnSources) {
+        for (final RowSet.Iterator it = rowSet.iterator(); it.hasNext(); ) {
+            final long rowKey = it.nextLong();
+            System.out.println("  Row key " + rowKey + ":");
+            for (final String colName : columnNames) {
+                System.out.println("    " + colName + ": " + columnSources.get(colName).get(rowKey));
+            }
+        }
+    }
+
 }
